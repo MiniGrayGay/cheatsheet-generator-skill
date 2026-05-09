@@ -25,6 +25,11 @@ current working directory unless `$ARGUMENTS` specifies a different path.
 
 Execute the three phases below **in order**.
 
+## Python Interpreter
+
+Use `./venv/bin/python` if it exists, otherwise fall back to `python3`.
+Every `python` command below assumes this resolved interpreter.
+
 ---
 
 ## Phase 1: Configuration Collection
@@ -37,7 +42,8 @@ Use Glob to find all supported files in the working directory:
 ### Step 1.2 — Launch config server
 
 ```bash
-python "${CLAUDE_SKILL_DIR}/scripts/config_server.py" --workdir "<WORKDIR>"
+./venv/bin/python "${CLAUDE_SKILL_DIR}/scripts/config_server.py" --workdir "<WORKDIR>" 2>/dev/null || \
+python3 "${CLAUDE_SKILL_DIR}/scripts/config_server.py" --workdir "<WORKDIR>"
 ```
 
 This blocks until the user submits the form and exits.
@@ -57,7 +63,16 @@ Read every file the user selected. Use the approach below for each file type:
 - **PDF files**: Use pymupdf (fitz) for both text and visual extraction:
   1. **Text extraction** — extract all text from every page:
      ```bash
-     PYTHONIOENCODING=utf-8 python -c "
+     PYTHONIOENCODING=utf-8 ./venv/bin/python -c "
+     import fitz, sys
+     doc = fitz.open(sys.argv[1])
+     for i, page in enumerate(doc):
+         text = page.get_text()
+         if text.strip():
+             print(f'=== PAGE {i+1} ===')
+             print(text)
+     " "<FILE_PATH>" 2>/dev/null || \
+     PYTHONIOENCODING=utf-8 python3 -c "
      import fitz, sys
      doc = fitz.open(sys.argv[1])
      for i, page in enumerate(doc):
@@ -70,7 +85,18 @@ Read every file the user selected. Use the approach below for each file type:
   2. **Page rendering** — render pages with diagrams, charts, or handwritten
      content as PNG images, then Read them visually (you are multimodal):
      ```bash
-     python -c "
+     ./venv/bin/python -c "
+     import fitz, os, sys
+     doc = fitz.open(sys.argv[1])
+     out_dir = os.path.splitext(sys.argv[1])[0] + '_pages'
+     os.makedirs(out_dir, exist_ok=True)
+     for i, page in enumerate(doc):
+         pix = page.get_pixmap(dpi=200)
+         out = os.path.join(out_dir, f'page_{i+1:03d}.png')
+         pix.save(out)
+         print(out)
+     " "<FILE_PATH>" 2>/dev/null || \
+     python3 -c "
      import fitz, os, sys
      doc = fitz.open(sys.argv[1])
      out_dir = os.path.splitext(sys.argv[1])[0] + '_pages'
@@ -94,7 +120,26 @@ Read every file the user selected. Use the approach below for each file type:
   1. **Text extraction** — run a Python script with `python-pptx` to parse all
      slides and extract text, tables, notes, and shape structure:
      ```bash
-     PYTHONIOENCODING=utf-8 python -c "
+     PYTHONIOENCODING=utf-8 ./venv/bin/python -c "
+     from pptx import Presentation
+     import sys, os
+     prs = Presentation(sys.argv[1])
+     for i, slide in enumerate(prs.slides, 1):
+         print(f'=== SLIDE {i} ===')
+         for shape in slide.shapes:
+             if shape.has_text_frame:
+                 for para in shape.text_frame.paragraphs:
+                     text = para.text.strip()
+                     if text: print(text)
+             if shape.has_table:
+                 for row in shape.table.rows:
+                     cells = [cell.text.strip() for cell in row.cells]
+                     print(' | '.join(cells))
+         if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+             notes = slide.notes_slide.notes_text_frame.text.strip()
+             if notes: print(f'[Notes: {notes}]')
+     " "<FILE_PATH>" 2>/dev/null || \
+     PYTHONIOENCODING=utf-8 python3 -c "
      from pptx import Presentation
      import sys, os
      prs = Presentation(sys.argv[1])
@@ -117,7 +162,21 @@ Read every file the user selected. Use the approach below for each file type:
   2. **Image extraction** — extract all images from the pptx media folder,
      then read them (you are multimodal and can see images directly):
      ```bash
-     python -c "
+     ./venv/bin/python -c "
+     import zipfile, os, sys
+     pptx_path = sys.argv[1]
+     out_dir = os.path.splitext(pptx_path)[0] + '_media'
+     os.makedirs(out_dir, exist_ok=True)
+     with zipfile.ZipFile(pptx_path) as z:
+         media = [n for n in z.namelist() if n.startswith('ppt/media/')]
+         for m in media:
+             data = z.read(m)
+             fname = os.path.basename(m)
+             with open(os.path.join(out_dir, fname), 'wb') as f:
+                 f.write(data)
+             print(os.path.join(out_dir, fname))
+     " "<FILE_PATH>" 2>/dev/null || \
+     python3 -c "
      import zipfile, os, sys
      pptx_path = sys.argv[1]
      out_dir = os.path.splitext(pptx_path)[0] + '_media'
@@ -286,7 +345,8 @@ Write the output to `<WORKDIR>/output/cheatsheet.tex`.
 
 Run in background:
 ```bash
-python "${CLAUDE_SKILL_DIR}/scripts/editor_server.py" --texfile "<WORKDIR>/output/cheatsheet.tex"
+./venv/bin/python "${CLAUDE_SKILL_DIR}/scripts/editor_server.py" --texfile "<WORKDIR>/output/cheatsheet.tex" 2>/dev/null || \
+python3 "${CLAUDE_SKILL_DIR}/scripts/editor_server.py" --texfile "<WORKDIR>/output/cheatsheet.tex"
 ```
 
 Capture the port from `EDITOR_SERVER_PORT=<port>` in stdout.
@@ -311,7 +371,14 @@ Loop:
 
 4. **Post result** (use Python to JSON-escape the tex):
    ```bash
-   python -c "
+   ./venv/bin/python -c "
+   import json, sys
+   with open('<WORKDIR>/output/cheatsheet.tex', 'r', encoding='utf-8') as f:
+       tex = f.read()
+   payload = json.dumps({'summary': '<SUMMARY>', 'tex': tex})
+   sys.stdout.write(payload)
+   " 2>/dev/null || \
+   python3 -c "
    import json, sys
    with open('<WORKDIR>/output/cheatsheet.tex', 'r', encoding='utf-8') as f:
        tex = f.read()
